@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+    <meta charset="UTF-8">
+    <title>Interaktiv Tekstanalyse efter Partition</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+            height: 100vh;
+        }
+        #controls {
+            padding: 20px;
+            background: #f8f8f8;
+            border-bottom: 1px solid #ddd;
+        }
+        #container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #word-list {
+            width: 300px;
+            overflow-y: scroll;
+            border-right: 1px solid #ddd;
+            padding: 10px;
+            background: #fff;
+        }
+        .word-item {
+            cursor: pointer;
+            padding: 4px 8px;
+            margin-bottom: 2px;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        .word-item:hover, .word-item.selected {
+            background-color: #e6e6ff;
+            color: #333;
+            font-weight: bold;
+        }
+        #main-view {
+            flex: 1;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .bar {
+            fill: steelblue;
+        }
+        .axis path,
+        .axis line {
+            fill: none;
+            stroke: #000;
+            shape-rendering: crispEdges;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <h2>Ordanalyse Værktøj</h2>
+        <input type="file" id="fileInput" accept=".txt">
+        <p id="status">Vælg venligst en tekstfil (.txt) for at starte analysen.</p>
+    </div>
+
+    <div id="container">
+        <div id="word-list">
+            <p>Vent venligst på filindlæsning...</p>
+        </div>
+        <div id="main-view">
+            <h3 id="chart-title">Klik på et ord i listen for at se dets fordeling.</h3>
+            <svg id="barchart"></svg>
+        </div>
+    </div>
+
+    <script>
+        // Global datastruktur til at holde alle ordtællinger
+        let analysisData = {};
+
+        // Størrelseskonstanter for Barchart
+        const margin = { top: 20, right: 30, bottom: 80, left: 60 };
+        const width = document.getElementById('main-view').offsetWidth - margin.left - margin.right;
+        const height = 500 - margin.top - margin.bottom;
+
+        // D3 SVG-opsætning
+        const svg = d3.select("#barchart")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom)
+            .append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        // D3 Skalaer og Akser (holder dem globale til opdatering)
+        let x, y, xAxis, yAxis;
+
+        function initializeChart() {
+            // Initialiser X- og Y-skalaer og akser (uden domæne)
+            x = d3.scaleBand()
+                .range([0, width])
+                .padding(0.1);
+
+            y = d3.scaleLinear()
+                .range([height, 0]);
+
+            xAxis = svg.append("g")
+                .attr("class", "x-axis")
+                .attr("transform", `translate(0,${height})`);
+
+            yAxis = svg.append("g")
+                .attr("class", "y-axis");
+            
+            // Y-akse label
+            svg.append("text")
+                .attr("transform", "rotate(-90)")
+                .attr("y", 0 - margin.left)
+                .attr("x", 0 - (height / 2))
+                .attr("dy", "1em")
+                .style("text-anchor", "middle")
+                .text("Antal forekomster i partition");
+        }
+
+        // --- Dataanalyse Algoritme ---
+        function runAnalysis(text) {
+            // 1. Split teksten i partitioner baseret på tagget
+            // Regex matcher <...>, f.eks. <chapitre=chap-01>
+            const partitionRegex = /(<[^>]*>)/g;
+            const segments = text.split(partitionRegex).filter(s => s.trim().length > 0);
+
+            let currentPartition = "INTRO";
+            const partitionContents = {};
+
+            segments.forEach(segment => {
+                if (segment.match(partitionRegex)) {
+                    // Hvis segmentet er et tag, opdaterer vi den aktuelle partition
+                    // Fjerner < og >, og bruger hele tagget som partition ID
+                    currentPartition = segment.slice(1, -1).trim();
+                } else {
+                    // Ellers tilføjer vi teksten til den aktuelle partition
+                    partitionContents[currentPartition] = (partitionContents[currentPartition] || "") + " " + segment;
+                }
+            });
+
+            const globalWordFrequencies = new Map();
+            const partitionWordFrequencies = {}; // { partitionId: { word: count, ... }, ... }
+
+            function cleanAndCountWords(segmentText) {
+                // Rengøringslogik: Fjern tegnsætning, behold '
+                let cleanText = segmentText.replace(/[^a-zæøåA-ZÆØÅ0-9']/g, ' ');
+                return cleanText.toLowerCase().split(/\s+/).filter(word => word.length > 0);
+            }
+
+            // 2. Tæl ord for hver partition
+            const partitionIds = Object.keys(partitionContents);
+
+            partitionIds.forEach(pId => {
+                const words = cleanAndCountWords(partitionContents[pId]);
+                partitionWordFrequencies[pId] = new Map();
+
+                words.forEach(word => {
+                    // Opdater partiel tælling
+                    partitionWordFrequencies[pId].set(word, (partitionWordFrequencies[pId].get(word) || 0) + 1);
+                    
+                    // Opdater global tælling
+                    globalWordFrequencies.set(word, (globalWordFrequencies.get(word) || 0) + 1);
+                });
+            });
+
+            // 3. Sorter global liste
+            const sortedGlobalWords = Array.from(globalWordFrequencies.entries());
+            sortedGlobalWords.sort((a, b) => {
+                const frequencyDiff = b[1] - a[1];
+                if (frequencyDiff !== 0) {
+                    return frequencyDiff;
+                }
+                return a[0].localeCompare(b[0]);
+            });
+
+            // Gem det komplette datasæt globalt
+            analysisData = {
+                globalList: sortedGlobalWords,
+                partitions: partitionWordFrequencies,
+                partitionIds: partitionIds
+            };
+
+            // 4. Vis ordliste
+            displayWordList(analysisData.globalList);
+            document.getElementById('status').textContent = `Analyse fuldført. ${sortedGlobalWords.length} unikke ord fundet i ${partitionIds.length} partitioner.`;
+        }
+
+
+        // --- UI Funktioner ---
+
+        function displayWordList(sortedList) {
+            const listDiv = d3.select("#word-list");
+            listDiv.html(''); // Tøm gammelt indhold
+
+            listDiv.selectAll(".word-item")
+                .data(sortedList)
+                .join("div")
+                .attr("class", "word-item")
+                .text(d => `${d[0]} (${d[1]})`)
+                .on("click", (event, d) => {
+                    const word = d[0];
+                    // Fjern 'selected' fra alle, og sæt den på det klikkede element
+                    d3.selectAll('.word-item').classed('selected', false);
+                    d3.select(event.currentTarget).classed('selected', true);
+                    
+                    updateBarchart(word);
+                });
+        }
+
+        function updateBarchart(word) {
+            document.getElementById('chart-title').textContent = `Fordeling af ordet: "${word}"`;
+
+            // Opret data til barchartet
+            const chartData = analysisData.partitionIds.map(pId => {
+                const count = analysisData.partitions[pId].get(word) || 0;
+                return { partition: pId, count: count };
+            });
+
+            // Opdater domæner
+            x.domain(chartData.map(d => d.partition));
+            y.domain([0, d3.max(chartData, d => d.count) * 1.05]);
+
+            // Opdater X-aksen og rotation af labels
+            xAxis.call(d3.axisBottom(x))
+                .selectAll("text")
+                .attr("transform", "translate(-10,0)rotate(-45)")
+                .style("text-anchor", "end");
+
+            // Opdater Y-aksen
+            yAxis.transition().duration(500).call(d3.axisLeft(y).ticks(5).tickFormat(d3.format("d")));
+
+            // Bind data og tegn søjler
+            const bars = svg.selectAll(".bar")
+                .data(chartData, d => d.partition);
+
+            // Exit (fjern gamle søjler, hvis partitioner er fjernet)
+            bars.exit().remove();
+
+            // Enter (tilføj nye søjler)
+            bars.enter().append("rect")
+                .attr("class", "bar")
+                .attr("x", d => x(d.partition))
+                .attr("y", height) // Start fra bunden
+                .attr("width", x.bandwidth())
+                .attr("height", 0) // Start med nul højde for animation
+                .merge(bars) // Flet enter og update
+                .transition().duration(500)
+                .attr("x", d => x(d.partition))
+                .attr("y", d => y(d.count))
+                .attr("width", x.bandwidth())
+                .attr("height", d => height - y(d.count));
+            
+            // Tilføj labels over søjlerne
+            const labels = svg.selectAll(".bar-label")
+                .data(chartData, d => d.partition);
+
+            labels.exit().remove();
+
+            labels.enter().append("text")
+                .attr("class", "bar-label")
+                .attr("text-anchor", "middle")
+                .attr("fill", "black")
+                .merge(labels)
+                .transition().duration(500)
+                .attr("x", d => x(d.partition) + x.bandwidth() / 2)
+                .attr("y", d => y(d.count) - 5)
+                .text(d => d.count > 0 ? d.count : ""); // Vis kun tælling, hvis > 0
+        }
+
+        // --- Filhåndtering ---
+        document.getElementById('fileInput').addEventListener('change', (event) => {
+            const file = event.target.files[0];
+
+            if (!file) return;
+
+            document.getElementById('status').textContent = `Indlæser fil: ${file.name}...`;
+            
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                const textContent = e.target.result;
+                try {
+                    runAnalysis(textContent);
+                } catch (error) {
+                    document.getElementById('status').textContent = `FEJL under analyse: ${error.message}`;
+                    console.error(error);
+                }
+            };
+
+            reader.onerror = () => {
+                document.getElementById('status').textContent = 'FEJL: Kunne ikke indlæse filen.';
+            };
+
+            reader.readAsText(file, 'UTF-8');
+        });
+
+        // Initialiser diagrammet ved start
+        initializeChart();
+    </script>
+</body>
+</html>

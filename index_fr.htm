@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Analyse de Texte Interactive par Partition</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+	
+	<link rel="preload" as="font" href="font/Lato/Lato-Regular.woff" type="font/woff" crossorigin="anonymous">
+    <style>
+		@font-face {
+			font-family: myLato;
+			src: url(font/Lato-Regular.woff);
+			}
+			
+        body {
+            font-family: myLato, sans-serif;
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+            height: 100vh;
+        }
+		
+
+
+        #header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 20px;
+            background: #f8f8f8;
+            border-bottom: 1px solid #ddd;
+        }
+        #language-selector {
+            display: flex;
+            gap: 10px;
+        }
+        .flag {
+            cursor: pointer;
+            width: 30px; /* Standard flagstørrelse */
+            height: 20px; 
+            background-size: cover;
+            border: 1px solid #ccc;
+            opacity: 0.5;
+            transition: opacity 0.2s;
+        }
+        .flag:hover, .flag.selected {
+            opacity: 1;
+            border: 1px solid #333;
+        }
+        /* Flag ikoner (simuleret med emojis i fravær af billeder) */
+        .flag[data-lang='fr'] { content: "🇫🇷"; font-size: 20px; line-height: 20px; text-align: center; }
+        .flag[data-lang='en'] { content: "🇬🇧"; font-size: 20px; line-height: 20px; text-align: center; }
+        .flag[data-lang='da'] { content: "🇩🇰"; font-size: 20px; line-height: 20px; text-align: center; }
+
+        /* Struktur og Layout */
+        #container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #word-list {
+            width: 300px;
+            overflow-y: scroll;
+            border-right: 1px solid #ddd;
+            padding: 10px;
+            background: #fff;
+        }
+        .word-item {
+            cursor: pointer;
+            padding: 4px 8px;
+            margin-bottom: 2px;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        .word-item:hover, .word-item.selected {
+            background-color: #e6e6ff;
+            color: #333;
+            font-weight: bold;
+        }
+        #main-view {
+            flex: 1;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .bar {
+            fill: steelblue;
+        }
+        .axis path,
+        .axis line {
+            fill: none;
+            stroke: #000;
+            shape-rendering: crispEdges;
+        }
+        .axis-label {
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="header">
+        <h2 id="app-title"></h2>
+        <div id="language-selector">
+            <span class="flag" data-lang="fr">🇫🇷</span>
+            <span class="flag" data-lang="en">🇬🇧</span>
+            <span class="flag" data-lang="da">🇩🇰</span>
+        </div>
+    </div>
+    
+    <div id="controls">
+        <input type="file" id="fileInput" accept=".txt">
+        <p id="status"></p>
+    </div>
+
+    <div id="container">
+        <div id="word-list">
+            <p></p>
+        </div>
+        <div id="main-view">
+            <h3 id="chart-title"></h3>
+            <svg id="barchart"></svg>
+        </div>
+    </div>
+
+    <script>
+        // --- 1. INTERNATIONALISERING (i18n) GLOSSARY ---
+        const glossary = {
+            'fr': { // Français (Default)
+                'appTitle': 'Analyse de Texte Interactive',
+                'filePrompt': 'Veuillez sélectionner un fichier texte (.txt) pour démarrer l\'analyse.',
+                'loadingFile': 'Chargement du fichier : ',
+                'analysisComplete': 'Analyse terminée. {0} mots uniques trouvés dans {1} partitions.',
+                'listPlaceholder': 'Veuillez charger un fichier.',
+                'chartPlaceholder': 'Cliquez sur un mot dans la liste pour voir sa distribution.',
+                'chartTitlePrefix': 'Distribution du mot :',
+                'yAxisLabel': 'Nombre d\'occurrences par partition',
+                'wordListTitle': 'Mots (Fréquence globale)',
+                'introPartition': 'INTRO' // Navn på default partition
+            },
+            'en': {
+                'appTitle': 'Interactive Text Analysis',
+                'filePrompt': 'Please select a text file (.txt) to start the analysis.',
+                'loadingFile': 'Loading file: ',
+                'analysisComplete': 'Analysis complete. {0} unique words found in {1} partitions.',
+                'listPlaceholder': 'Please load a file.',
+                'chartPlaceholder': 'Click on a word in the list to see its distribution.',
+                'chartTitlePrefix': 'Word distribution:',
+                'yAxisLabel': 'Number of occurrences per partition',
+                'wordListTitle': 'Words (Global Frequency)',
+                'introPartition': 'INTRO'
+            },
+            'da': {
+                'appTitle': 'Interaktiv Tekstanalyse',
+                'filePrompt': 'Vælg venligst en tekstfil (.txt) for at starte analysen.',
+                'loadingFile': 'Indlæser fil: ',
+                'analysisComplete': 'Analyse fuldført. {0} unikke ord fundet i {1} partitioner.',
+                'listPlaceholder': 'Indlæs venligst en fil.',
+                'chartPlaceholder': 'Klik på et ord i listen for at se dets fordeling.',
+                'chartTitlePrefix': 'Fordeling af ordet:',
+                'yAxisLabel': 'Antal forekomster pr. partition',
+                'wordListTitle': 'Ord (Global frekvens)',
+                'introPartition': 'INTRO'
+            }
+        };
+        
+        let currentLang = 'fr'; // Fransk er standard
+        let analysisData = {}; // Global datastruktur
+
+        // Funktion til dynamisk at hente og indsætte gloser
+        function getGlose(key, ...params) {
+            let text = glossary[currentLang][key] || glossary['fr'][key] || `MISSING_GLOSSARY_KEY: ${key}`;
+            // Erstat placeholders {0}, {1}, etc.
+            params.forEach((param, index) => {
+                text = text.replace(`{${index}}`, param);
+            });
+            return text;
+        }
+
+        // Funktion til at opdatere alle UI tekster
+        function updateUI() {
+            document.title = getGlose('appTitle');
+            document.getElementById('app-title').textContent = getGlose('appTitle');
+            document.getElementById('status').textContent = getGlose('filePrompt');
+			//document.getElementById('word-list').querySelector('h4').textContent=getGlose('listPlaceholder');
+			 document.getElementById('chart-title').textContent = getGlose('chartPlaceholder');
+            document.getElementById('word-list').querySelector('h4').innerhtml = getGlose('listPlaceholder');
+           
+            
+            // Opdaterer Y-aksens label
+            d3.select(".y-axis-label").text(getGlose('yAxisLabel'));
+
+            // Opdater titlen for ordlisten
+            const wordListTitle = document.getElementById('word-list').querySelector('h4');
+            if (wordListTitle) wordListTitle.textContent = getGlose('wordListTitle');
+
+            // Opdater valgt flag
+            document.querySelectorAll('.flag').forEach(flag => {
+                flag.classList.remove('selected');
+                if (flag.dataset.lang === currentLang) {
+                    flag.classList.add('selected');
+                }
+            });
+        }
+        
+        // --- 2. D3.js Initialisering og Globaler ---
+        const fileInput = document.getElementById('fileInput');
+        const outputDiv = document.getElementById('output');
+        
+        const mainView = document.getElementById('main-view');
+        // Skal genberegnes, da DOM er loaded
+		const margin = { top: 20, right: 30, bottom: 80, left: 60 };
+        const w = mainView.offsetWidth - margin.left - margin.right;
+        
+        
+        const w_chart = 600; // Fast bredde for barchart, da width er dynamisk i CSS
+        const h_chart = 400; 
+
+        // D3 SVG-opsætning
+        const svg = d3.select("#barchart")
+            .attr("width", w_chart + margin.left + margin.right)
+            .attr("height", h_chart + margin.top + margin.bottom)
+            .append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        let x, y, xAxis, yAxis;
+        
+        function initializeChart() {
+            // Initialiser X- og Y-skalaer og akser
+            x = d3.scaleBand().range([0, w_chart]).padding(0.1);
+            y = d3.scaleLinear().range([h_chart, 0]);
+
+            xAxis = svg.append("g")
+                .attr("class", "x-axis axis")
+                .attr("transform", `translate(0,${h_chart})`);
+
+            yAxis = svg.append("g")
+                .attr("class", "y-axis axis");
+            
+            // Y-akse label (permanent element)
+            svg.append("text")
+                .attr("class", "y-axis-label axis-label")
+                .attr("transform", "rotate(-90)")
+                .attr("y", 0 - margin.left)
+                .attr("x", 0 - (h_chart / 2))
+                .attr("dy", "1em")
+                .style("text-anchor", "middle")
+                .text(getGlose('yAxisLabel')); 
+        }
+
+        // --- 3. Dataanalyse og Visualisering ---
+
+        function runAnalysis(text) {
+            // 1. Split teksten i partitioner baseret på tagget
+            const partitionRegex = /(<[^>]*>)/g;
+            const segments = text.split(partitionRegex).filter(s => s.trim().length > 0);
+
+            let currentPartition = getGlose('introPartition');
+            const partitionContents = {};
+
+            segments.forEach(segment => {
+                if (segment.match(partitionRegex)) {
+                    // Tagget (<...>) bliver det nye partition ID
+                    currentPartition = segment.slice(1, -1).trim();
+                } else {
+                    // Teksten tilføjes til den aktuelle partition
+                    partitionContents[currentPartition] = (partitionContents[currentPartition] || "") + " " + segment;
+                }
+            });
+
+            const globalWordFrequencies = new Map();
+            const partitionWordFrequencies = {};
+            
+            function cleanAndCountWords(segmentText) {
+                let cleanText = segmentText.replace(/[^a-zæøåA-ZÆØÅ0-9']/g, ' ');
+                return cleanText.toLowerCase().split(/\s+/).filter(word => word.length > 0);
+            }
+
+            // Tæl ord for hver partition og globalt
+            const partitionIds = Object.keys(partitionContents);
+
+            partitionIds.forEach(pId => {
+                const words = cleanAndCountWords(partitionContents[pId]);
+                partitionWordFrequencies[pId] = new Map();
+
+                words.forEach(word => {
+                    partitionWordFrequencies[pId].set(word, (partitionWordFrequencies[pId].get(word) || 0) + 1);
+                    globalWordFrequencies.set(word, (globalWordFrequencies.get(word) || 0) + 1);
+                });
+            });
+
+            // Sorter global liste
+            const sortedGlobalWords = Array.from(globalWordFrequencies.entries());
+            sortedGlobalWords.sort((a, b) => {
+                const frequencyDiff = b[1] - a[1];
+                if (frequencyDiff !== 0) return frequencyDiff;
+                return a[0].localeCompare(b[0]);
+            });
+
+            // Gem data
+            analysisData = {
+                globalList: sortedGlobalWords,
+                partitions: partitionWordFrequencies,
+                partitionIds: partitionIds
+            };
+
+            // 4. Vis ordliste
+            displayWordList(analysisData.globalList);
+            document.getElementById('status').textContent = getGlose('analysisComplete', sortedGlobalWords.length, partitionIds.length);
+        }
+
+        function displayWordList(sortedList) {
+            const listDiv = d3.select("#word-list");
+            listDiv.html(`<h4 style="margin-top: 0;">${getGlose('wordListTitle')}</h4>`); 
+
+            listDiv.selectAll(".word-item")
+                .data(sortedList)
+                .join("div")
+                .attr("class", "word-item")
+                .text(d => `${d[0]} (${d[1]})`)
+                .on("click", (event, d) => {
+                    d3.selectAll('.word-item').classed('selected', false);
+                    d3.select(event.currentTarget).classed('selected', true);
+                    updateBarchart(d[0]);
+                });
+        }
+
+        function updateBarchart(word) {
+            document.getElementById('chart-title').textContent = `${getGlose('chartTitlePrefix')} "${word}"`;
+
+            const chartData = analysisData.partitionIds.map(pId => {
+                const count = analysisData.partitions[pId].get(word) || 0;
+                return { partition: pId, count: count };
+            });
+
+            // Opdater domæner og akser
+            x.domain(chartData.map(d => d.partition));
+            y.domain([0, d3.max(chartData, d => d.count) * 1.05]);
+
+            xAxis.transition().duration(500).call(d3.axisBottom(x))
+                .selectAll("text")
+                .attr("transform", "translate(-10,0)rotate(-45)")
+                .style("text-anchor", "end");
+
+            yAxis.transition().duration(500).call(d3.axisLeft(y).ticks(5).tickFormat(d3.format("d")));
+
+            // Bind data og tegn søjler
+            const bars = svg.selectAll(".bar")
+                .data(chartData, d => d.partition);
+
+            bars.exit().remove();
+
+            bars.enter().append("rect")
+                .attr("class", "bar")
+                .attr("x", d => x(d.partition))
+                .attr("y", h_chart) 
+                .attr("width", x.bandwidth())
+                .attr("height", 0) 
+                .merge(bars)
+                .transition().duration(500)
+                .attr("x", d => x(d.partition))
+                .attr("y", d => y(d.count))
+                .attr("width", x.bandwidth())
+                .attr("height", d => h_chart - y(d.count));
+            
+            // Labels over søjlerne
+            const labels = svg.selectAll(".bar-label")
+                .data(chartData, d => d.partition);
+
+            labels.exit().remove();
+
+            labels.enter().append("text")
+                .attr("class", "bar-label")
+                .attr("text-anchor", "middle")
+                .attr("fill", "black")
+                .merge(labels)
+                .transition().duration(500)
+                .attr("x", d => x(d.partition) + x.bandwidth() / 2)
+                .attr("y", d => y(d.count) - 5)
+                .text(d => d.count > 0 ? d.count : ""); 
+        }
+
+        // --- 4. Event Handlers ---
+        
+        // Fildialogboks
+        fileInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            document.getElementById('status').textContent = getGlose('loadingFile') + file.name;
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    runAnalysis(e.target.result);
+                } catch (error) {
+                    document.getElementById('status').textContent = `Erreur lors de l'analyse: ${error.message}`; // Fejlmeldinger forbliver på engelsk/fransk
+                    console.error(error);
+                }
+            };
+            reader.onerror = () => {
+                document.getElementById('status').textContent = 'Erreur: Impossible de charger le fichier.';
+            };
+            reader.readAsText(file, 'UTF-8');
+        });
+
+        // Sprogvælger
+        document.querySelectorAll('.flag').forEach(flagElement => {
+            flagElement.addEventListener('click', (event) => {
+                currentLang = event.currentTarget.dataset.lang;
+                updateUI();
+				console.log("Hej");
+                // Genopfrisk ordlisten for at opdatere partitionstitel/navne, hvis filen allerede er indlæst
+                if (analysisData.globalList) {
+                    displayWordList(analysisData.globalList);
+                    // Nulstil barchart
+                    document.getElementById('chart-title').textContent = getGlose('chartPlaceholder');
+                    svg.selectAll(".bar").remove();
+                    svg.selectAll(".bar-label").remove();
+                }
+            });
+        });
+
+        // Initialisering ved start
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeChart();
+            updateUI();
+			console.log("Hej2");
+        });
+    </script>
+</body>
+</html>
